@@ -800,15 +800,229 @@ This feature, when used with [steal-stache](../../steal-stache.html), signals to
 
 ## Models
 
-### Typed data, but separate from connection info.
+As previously mentioned, models are responsible for loading data from a server and representing the data sent back from a server. They often perform data validation and sanitization logic. Models use intelligent set logic to cache data, minimize network requests, and provide real-time functionality.
+
+### Server connection and data type separation of concerns
+
+CanJS helps you organize your model code into two distinct parts:
+
+1) Communicating with a server.
+2) Managing the returned data.
+
+This is accomplished by encapsulating the code required to connect to a service and encouraging typed definitions of the data the service returns.
+
+In essence, for every “type” of data object in your project, you can create a model to represent the properties and methods attached to it. With this model in hand, you can also structure how you communicate with your server. Different API calls can return the same type of data and have those represented as model objects.
+
+CanJS provides easy ways to both parse data from a server into model object instances that are more useful in your code and serialize those objects back to any format (e.g. JSON) for the server.
+
+[Example of defining a ToDo type.]
+
+[Example showing how to get todos from a server.]
 
 ### Parameter awareness
 
-[can-set](http://canjs.github.io/canjs/doc/can-set.html)
+[I think most of this section needs to be changed to provide a basic summary of what parameter awareness is: matching request parameters with returned data.]
 
-### Real time
+[can-set](http://canjs.github.io/canjs/doc/can-set.html) understands what your parameters mean, and because of that, it provides real-time, caching, and minimal data requests.
 
-### Instance and List stores
+can-set makes list stores, as well as the info in the rest of this section, possible.
+
+[can-set](https://github.com/canjs/can-set) is used to compare set objects that are represented by the parameters commonly passed to service requests.
+
+For example, if you want all todos for user `5` that are complete, you might call:
+
+```
+Todo.getList({userId: 5, complete: true})
+```
+
+`{userId: 5, complete: true}` represents a set.  Using
+`can-set` we can compare it to other sets. The following
+returns `true` because `{userId: 5, complete: true}` represents
+a subset of `{userId: 5}`.
+
+```
+set.subset({userId: 5, complete: true},{userId: 5}) //-> true
+```
+
+`can-set` can perform more complex logic with custom [set Algebras](https://github.com/canjs/can-set#setalgebra).
+
+The following creates a set-algebra that is able to combine ranges:
+
+```
+// Create a set Algebra
+var algebra = new set.Algebra(
+  set.comparators.rangeInclusive("start","end"));
+
+// use it
+algebra.union({start: 1, end: 10},
+              {start: 11, end: 20}) //-> {start: 1, end: 20}
+``` 
+
+In a CanJS application, you create custom algebras to pass
+to [can-connect](#section=section_can_connect) connections. The connection’s behaviors use that [algebra](http://connect.canjs.com/doc/connect.base.algebra.html) to their optimizations.
+
+For example, if the `Todo` type has the following property behaviors:
+
+ - `complete` can be `true` or `false`
+ - `type` can be one of `dev`, `design`, or `QA`
+
+…and the service layer supports queries like:
+
+```
+//-> gets all incomplete todos
+/services/todos?complete=false 
+
+// -> gets all todos that are for design and dev
+/services/todos?type[]=dev&type[]=design
+```
+
+You’d want to create an algebra for the `superMap` as follows:
+
+```
+var algebra = new set.Algebra(
+  set.comparators.boolean("complete"),
+  set.comparators.enum("type", ["dev", "design", "QA"])
+);
+
+export const messageConnection = superMap({
+  url: "/services/todos",
+  Map: Todo,
+  List: TodoList,
+  name: 'todo',
+  algebra: algebra
+});
+```
+
+This allows a `superMap` to combine requests like:
+
+```
+  Todo.getList({complete: true})
++ Todo.getList({complete: true})
+================================
+  Todo.getList({})
+```
+
+And know that if `Todo.getList({type: ["dev","design"]})` has already been retrieved, there's no need to make a request for 
+`Todo.getList({type: ["dev"]})`.
+
+### Real-time instance updates
+
+Read the data object leaks article
+
+The instance store manages all of the individual instances. They’re memory safe because instances are only retained in the store while something is observing them.
+
+For instances, this solves a big problem!
+
+For list stores, if you request the same… in a real-time scenario, if two parts of the app need the same data, if you’ve already loaded it, the same list is used.
+
+You can read more about the benefits of the instance store in our [“Avoid the Zombie Apocalypse” blog post](https://www.bitovi.com/blog/avoid-the-zombie-apocalypse).
+
+A non-leaking global store of can.Model instances.
+
+#### Use
+
+The model store is used to store instances of a model. It serves two purposes:
+
+1. Preventing duplicate instances of a model from creating duplicate instance copies that get out of sync.
+1. Cleaning up old unused instances so that the size of this store remains minimal, and applications don't slowly collect memory over time without releasing it.
+
+From a development perspective, the store can be used as a global hash to look up model instances. Instances are stored by their id. A model's store property thus looks like this:
+
+    {
+      "34535": {id: "34535", name: "Bob", _bindings: 3},
+      "34536": {id: "34536", name: "Mike", _bindings: 3},
+    }
+
+The store is typically not used in application code, but rather is an internal feature of can.Model. However, it is possible to use it for looking up model instances or overriding the default behavior of the store to do something special.
+
+##### Duplicate Instances
+
+The main reason to have a global store is to prevent duplicate instances from being created.
+
+###### The problem
+
+For example, an application could retrieve and display two lists of todos in the same page. First a list of todos due tomorrow:
+
+    Todo.findAll({due: "tomorrow"})
+
+That response might look like:
+
+    [
+      {id: 2, name: "finish writing docs", urgency: "low", due: "tomorrow", completed: false},
+      {id: 7, name: "sell my car", urgency: "high", due: "tomorrow", completed: false}
+    ]
+
+Next a list of todos that are urgent:
+
+```
+Todo.findAll({priority: "high"})
+```
+
+That response might look like:
+
+    [
+      {id: 5, name: "take dog to the vet", urgency: "high", due: "next week", completed: false},
+      {id: 7, name: "sell my car", urgency: "high", due: "tomorrow", completed: false}
+    ]
+
+As you can see, there is one todo that appears in both lists - sell my car. Without a can.Model.store, these would both be treated as independent model instances. 
+
+If these todos are displayed in separate lists in the page, and a user marks "sell my car" as completed in the "due tomorrow" list, which causes the completed property to toggle to true, the other todo would not reflect this change. This is a big problem!
+
+###### The solution
+
+In can.Model, whenever the first model response is received, each item in the response will be added to the store, keyed off the [can.Model.id] property. When the second model response is received, instead of creating a second instance, it will check the store for the given id (7) and find the pre-existing model instance. A new instance won't be created. Instead, the same instance will be reused in the second response.
+
+Therefore, when the user marks the completed property as true in the "due tomorrow" list, the other list, which is displaying the same todo instance, will reflect this change. Both lists are showing the same instance, and via live binding, will reflect the changed property visually in the DOM. Magic!
+
+###### Future updates
+
+Similarly, if another duplicate instance is retrieved later via another findAll, and it has a new `due` property, the store instance will be updated with that new property, and all displayed instances will update themselves. There will only be one instance with each unique ID in the page at any time.
+
+##### Non-leaking Store
+
+The problem with a global store is that it grows in size over the lifecycle of a heavily used application without ever releasing its memory. can.Model.store solves this problem by removing any instances that are not being used anymore.
+
+###### How it works
+
+Each can.Model instance has a `_bindings` property, which is a reference counter keeping track of how many times this instance has been bound to. There are two ways _bindings gets incremented:
+
+1. If the instance is bound to directly: 
+
+    todo.bind('name', function(){})
+
+2. If properties of the instance are bound to via live binding in a template:
+
+    Name: {{name}}
+
+The reverse is also true. _bindings gets decremented whenever `unbind` is called manually, or, more commonly, whenever a part of the DOM connected to live bindings gets removed. Removing live-bound portions of the DOM cause the live bindings to be removed via calls to `unbind`, which decrements the _bindings count.
+
+What this means is whenever a model is being "shown" in the page, it has _bindings > 0. Whenever that model is no longer being "shown", its _bindings get decremented down to 0. There is an internal _cleanup that will periodically delete any instances that have _bindings === 0, allowing browser garbage collection to free up that memory.
+
+The result is that in long running applications that stream large amounts of data, it is safe to assume that this store will not cause memory to increase over time.
+
+### Real-time list updates
+
+Real-time works automatically, but this doesn’t just mean a real-time server. Automatic insertion, removal, and replacement of items in a list gets handled.
+
+In our example app Bitballs, when a new player is created, that player automatically gets inserted alphabetically when it’s created. This is magical for a few reasons:
+
+- You don’t have to update the list yourself.
+- You don’t need to make a `GET` request to the server for what you just sent.
+
+This awareness of how the data relates is crucial.
+
+Maybe this should be automatic list…?
+
+List store: it’s an interface! Real-time is only possible through non-leaking list stores. List stores solve the real-time problem; that’s really its only reason.
+
+Imagine you have two lists: critical and due today todos. Changes in one should affect the other. Both lists point to the same instances.
+
+The list store keeps track of what instances should be in each list.
+
+Example: page with list of issues with different issues.
+
+[Possibly compare to React.]
 
 ### Caching and minimal data requests
 
@@ -918,7 +1132,7 @@ can.Component.extend({
 });
 ```
 
-The model layer seamlesslly integrates the inline cache in client side requests, without any special configuration.
+The model layer seamlessly integrates the inline cache in client side requests, without any special configuration.
 
 While this flow would be possible in other SSR systems, it would require manually setting up all of these steps.
 This video illustrates how it works.
@@ -927,7 +1141,131 @@ This video illustrates how it works.
 
 [can-connect/can/ref/ref](http://canjs.github.io/canjs/doc/can-connect/can/ref/ref.html)
 
-### Web worker
+Makes working with MongoDB easier.
+
+High-level overview: with MongoDB, you have documents; some documents have IDs whereas some have actual objects representing something. Refs deal with that ambiguity.
+
+`can/ref` is useful when the server might return either a reference to
+a value or the value itself.  For example, in a MongoDB setup, it
+a request like `GET /game/5` might return:
+
+```
+{
+  id: 5,
+  teamRef: 7,
+  score: 21
+}
+```
+
+But a request like `GET /game/5?$populate=teamRef` might return:
+
+```
+{
+  id: 5,
+  teamRef: {id: 7, name: "Cubs"},
+  score: 21
+}
+```
+
+`can/ref` can handle this abigutity, and even make lazy loading possible.
+
+To use `can/ref`, first create a Map and a connection for the referenced type:
+
+```
+var Team = DefineMap.extend({
+	id: 'string'
+});
+
+connect([
+  require("can-connect/constructor/constructor"),
+  require("can-connect/constructor/store/store"),
+  require("can-connect/can/map/map"),
+  require("can-connect/can/ref/ref")
+],{
+    Map: Team,
+    List: Team.List,
+    ...
+})
+```
+
+The connection is necessary because it creates an instance store which will
+hold instances of `Team` that the `Team.Ref` type will be able to access.
+
+Now we can create a reference to the Team within a Game map and the Game's connection:
+
+```
+var Game = DefineMap.extend({
+	 id: 'string',
+	 teamRef: {type: Team.Ref.type},
+	 score: "number"
+});
+
+superMap({
+  Map: Game,
+  List: Game.List
+})
+```
+
+Now, `teamRef` is a [can-connect/can/ref/ref.Map.Ref] type, which will
+house the id of the reference no matter how the server returns data like
+`game.teamRef.id`.
+
+For example, without populating the team data:
+
+```
+Game.get({id: 5}).then(function(game){
+		game.teamRef.id //-> 7
+});
+```
+
+With populating the team data:
+
+```
+Game.get({id: 5, populate: "teamRef"}).then(function(game){
+		game.teamRef.id //-> 7
+});
+```
+
+The values of other properties and methods on the [can-connect/can/ref/ref.Map.Ref] type
+are determined by if the reference was populated or the referenced item already exists
+in the [can-connect/constructor/store/store.instanceStore].
+
+For example, `value`, which points to the referenced instance will be populated if the reference was populated:
+
+```
+Game.get({id: 5, $populate: "teamRef"}).then(function(game){
+		game.teamRef.value.name //-> 5
+});
+```
+
+Or, it will be populated if that instance had loaded through another means and
+is in the instance store:
+
+```
+Team.get({id: 7}).then(function(team){
+  // binding adds things to the store
+  team.on("name", function(){})
+}).then(function(){
+  Game.get({id: 5}).then(function(game){
+    game.teamRef.value.name //-> 5
+  });
+})
+```
+
+`value` is an [can-define.types.get asynchrounos getter], which means that even if
+the referenced value isn't populated or loaded through the store, it can be lazy loaded. This
+is generally most useful in a template.
+
+The following will make an initial request for game `5`, but when the template
+tried to read and listen to `game.teamRef.value.name`, a request for team `7`
+will be made.
+
+```
+var template = stache("{{game.teamRef.value.name}} scored {{game.score}} points");
+Game.get({id: 5}).then(function(game){
+   template({game: game});
+});
+```
 
 ## Server Side Rendering
 
