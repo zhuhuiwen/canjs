@@ -1380,20 +1380,28 @@ This feature, when used with [steal-stache](../../steal-stache.html), signals to
 
 ## Malleable Models
 
-As previously mentioned, models are responsible for loading data from a server and representing the data sent back from a server.
+CanJS’s models are primarily responsible for defining your data’s schema and communicating with a server to read and write data.
 
-Models often perform data validation and sanitization logic. They use intelligent set logic to cache data, minimize network requests, and provide real-time functionality.
+In addition to CRUD and real-time capabilities, [can-set] and [can-connect] combined provide lots of great features out-of-the-box:
 
-### Server connection and data type separation of concerns
+- [Memory-safe instance store](#Memory_safeinstancestore)
+- [Real-time list updates](#Real_timelistupdates)
+- [Parameter awareness](#Parameterawareness)
+- [Caching and minimal data requests](#Cachingandminimaldatarequests)
+- [Related-data features](#Related_datafeatures)
 
-CanJS helps you organize your model code into two distinct parts:
+### Separation of concerns
+
+CanJS separates your model layer into two parts:
 
 1) Communicating with a server.
-2) Managing the returned data.
+2) Managing your data’s schema.
 
-This is accomplished by encapsulating the code required to connect to a service and encouraging typed definitions of the data the service returns.
+Separating these two concerns means your model data isn’t tied to connection specifics. Your project may start with a RESTful API for CRUD operations but end up with a real-time WebSocket API, and with CanJS, it doesn’t affect how your data is modeled.
 
-In essence, for every “type” of data object in your project, you can create a model to represent the properties and methods attached to it. With this model in hand, you can also structure how you communicate with your server. Different API calls can return the same type of data and have those represented as model objects.
+Additionally, with our mixin-based approach, you can add easily add behaviors to both parts separately. Want to add [can-connect/data/localstorage-cache/localstorage-cache Local Storage] caching? It’s a one-line add-on. How about a behavior to [can-connect/data/combine-requests/combine-requests efficiently combine network requests]? One line too! Need something not provided by [can-connect]? You can write and mix in your own behaviors too.
+
+This separation of concerns and powerful mixin behavior is accomplished by encapsulating the code required to connect to a service and encouraging typed definitions of your model data. For every “type” of data object in your project, you can create a model to represent the properties and methods attached to it. With this model in hand, you can also structure how you communicate with your server. Different API calls can return the same type of data and have those represented as model objects.
 
 Let’s look at an example of how we would define a `Todo` type and a list of todos:
 
@@ -1427,40 +1435,42 @@ var todoConnection = connect([
 	require("can-connect/data/url/url")
 ], {
 	url: "/api/todos",
-	list: function(listData, set) {
-		return new TodoList(listData.data);
-	},
-	instance: function(props) {
-		return new Todo(props);
-	}
+	Map: Todo,
+	List: TodoList
 });
 ```
 
 That connection can be used to get a `TodoList` of `Todo`s:
 
 ```javascript
-todoConnection.getList({}).then(function(todos) {
+Todo.getList({}).then(function(todos) {
 	// Do what you’d like with the `todos`
 });
 ```
 
-### Real-time instance updates
+### Memory-safe instance store
 
-As mentioned previously, CanJS has observables to automatically propagate changes from an object to the view (DOM); this is called live binding.
+Let’s say…
 
-[can-connect] also has an instance store for two purposes:
+[As mentioned previously](#OutstandingObservableObjects), CanJS has observables to automatically propagate changes from an object to the view (DOM); this is called live binding.
 
-1. Preventing duplicate instances of a model from creating duplicate instance copies that get out of sync.
-2. Cleaning up old unused instances so that the size of this store remains minimal and applications don't slowly collect memory over time without releasing it.
+[Show the use case first]
+
+[can-connect] also has an instance store [remove reference here] for two purposes:
+
+1. Preventing duplicate instances of a model object from being created.
+2. Cleaning up unused instances so that applications don’t slowly collect memory over time without releasing it.
+
+[Define what an instance store is…]
 
 #### Duplicate instances
 
-The instance store prevents duplicate instances from being created by storing each model object by its `id` (by default; you can configure which property is used).
+The instance store prevents duplicate instances from being created by storing each model object by its `id` (but you can [can-set.props.id change] which property is used).
 
 Let’s look at how duplicate instances are prevented by continuing with our todo app example.
 
 ```javascript
-todoConnection.getList({completed: false}).then(function(incompleteTodos) {});
+Todo.getList({completed: false}).then(function(incompleteTodos) {});
 ```
 
 `incompleteTodos` might look like this:
@@ -1473,7 +1483,7 @@ todoConnection.getList({completed: false}).then(function(incompleteTodos) {});
 Next, let’s fetch a list of high-priority todos:
 
 ```javascript
-todoConnection.getList({priority: "high"}).then(function(urgentTodos) {});
+Todo.getList({priority: "high"}).then(function(urgentTodos) {});
 ```
 
 `urgentTodos` might look like this:
@@ -1495,7 +1505,7 @@ CanJS intelligently solves this potential problem for you by keeping track of wh
 
 The reference count for each object increases in two ways:
 
-1. Explicitly: if you call `.bind()` on an instance, like so: `todo.bind('name', function(){})`
+1. Explicitly: if you call `.bind()` on an instance (e.g. `todo.bind('name', function(){})`) or use [can-connect/constructor/store/store.addInstanceReference]
 
 2. Implicitly: if properties of the instance are bound to via live-binding in a view, e.g. `Name: {{name}}` in a [can-stache] template
 
@@ -1513,7 +1523,7 @@ You can read more about the benefits of the instance store in our [“Avoid the 
 
 ### Real-time list updates
 
-In addition to keeping object instances up to date, CanJS also automatically inserts, removes, and replaces objects within lists.
+CanJS also automatically inserts, removes, and replaces objects within lists.
 
 Let’s continue with our incomplete and urgent todo example from the previous section.
 
@@ -1531,27 +1541,34 @@ Let’s continue with our incomplete and urgent todo example from the previous s
       {id: 2, completed: false, name: "Finish docs", priority: "high"}
     ]
 
-In the UI, there’s a checkbox next to each urgent todo that sets the `completed` property like this:
+In the UI, there’s a checkbox next to each urgent todo that toggles the `completed` property:
 
 ```javascript
 todo.completed = !todo.completed;
+todo.save();
 ```
 
 When the user clicks the checkbox for the “Finish docs” todo, its `completed` property gets set to `true` and it automatically disappears from the `incompleteTodos` list.
 
 How is that possible? The answer is the list store and set logic, made possible with [can-set].
 
-Similar to the instance store, the list store is a collection of all the model lists in a CanJS application. It’s memory safe (it won’t leak) and understands what your parameters mean, so it can intelligently insert, remove, and replace objects within your lists.
+Similar to the instance store, there is a list store that contains all of the lists loaded from the server. It’s memory safe (it won’t leak) and understands what your parameters mean, so it can intelligently insert, remove, and replace objects within your lists.
 
-#### Parameter awareness
+[Maybe change these two paragraphs to define list store and parameter awareness…]
+
+### Parameter awareness
 
 When you make a request like the one below:
 
 ```javascript
-todoConnection.getList({completed: false}).then(function(incompleteTodos) {});
+Todo.getList({completed: false}).then(function(incompleteTodos) {});
 ```
 
+[See Google Doc for Justin’s comments on this section.]
+
 [can-connect] uses [can-set] to create an [can-set.Algebra Algebra] that represents all incomplete todos.
+
+[This wouldn’t work automatically!]
 
 ```
 var set = require("can-set");
@@ -1575,29 +1592,17 @@ You can read more about the magic of `can-set` in its [can-set API docs].
 
 Undoubtedly, the slowest part of any web application is communicating with the server. CanJS uses the following strategies to improve performance:
 
-* Combining requests: combine multiple requests to the same API into one request
-* Fall-through caching: improve perceived performance by showing cached data first (while still fetching the latest data)
-* Request caching: reduce the number and size of server requests by intelligently using cached datasets
-
-#### Combining requests
-
-CanJS collects requests that are made within [can-connect/data/combine-requests.time a millisecond] of each other and tries to combine them into a single request if they are for the same API.
-
-For example, let’s say we’re loading a page that has two parts: a section with todos that need to be completed and a section that’s an archive of completed todos. The incomplete section is just a list of todos, while the archive section is broken up by month, so you want to split these sections into two different components.
-
-In most other frameworks, you would probably decide to have some parent component fetch the list of all todos so you could pass different subsets to each component. This decreases the reusability and maintainability of the components, but it would result in just one network request instead of two.
-
-With CanJS, you don't have to choose between maintainability and performance. You can decide to have each component fetch its data independently and [can-connect] will intelligently combine the two requests into one.
-
-This is made possible by the [can-set] algebra we discussed earlier. [can-connect] sees the outgoing requests, can determine that requests for `todoConnection.getList({completed: true})` and `todoConnection.getList({completed: false})` are equivalent to just one `todoConnection.getList({})` request, then make that single request and return the correct data to each call.
-
-This [can-connect/data/combine-requests/combine-requests configurable behavior] is extremely powerful because it abstracts network request complexity away from how you create and compose your application.
+* [can-connect/fall-through-cache/fall-through-cache Fall-through caching]: improve perceived performance by showing cached data first (while still fetching the latest data)
+* [can-connect/cache-requests/cache-requests Request caching]: reduce the number and size of server requests by intelligently using cached datasets
+* [can-connect/data/combine-requests/combine-requests Combining requests]: combine multiple requests to the same API into one request
 
 #### Fall-through caching
 
 To increase perceived performance, `can-connect` includes a [can-connect/fall-through-cache/fall-through-cache fall-through cache] that first serves cached data from `localStorage` while simultaneously making the API request to get the latest data.
 
 The major benefit of this technique is improved perceived performance: users will see content faster because it’s returned immediately from the cache. When the data hasn’t changed, the user doesn’t notice anything, but when it has, the magic of live-bindings automatically updates the data as soon as the API request finishes.
+
+[Show this some how; maybe link to a version of TodoMVC?]
 
 #### Request caching
 
@@ -1607,7 +1612,21 @@ In the first scenario, where the data doesn’t change very often (and thus shou
 
 Additionally, the request logic is more aggressive in its attempts to find subsets of the data within the cache and to only make an API request for the subset NOT found in the cache. In other words, partial cache hits are supported.
 
-### Works with related data
+#### Combining requests
+
+CanJS collects requests that are made within [can-connect/data/combine-requests.time a millisecond] of each other and tries to combine them into a single request if they are for the same API.
+
+For example, let’s say we’re loading a page that has two parts: a section with incomplete todos and a section that’s an archive of completed todos. The incomplete section is just a list of todos, while the archive section is broken up by month, so you want to split these sections into two different components.
+
+In most other frameworks, you would probably decide to have some parent component fetch the list of all todos so you could pass different subsets to each component. This decreases the reusability and maintainability of the components, but it would result in just one network request instead of two.
+
+With CanJS, you don't have to choose between maintainability and performance. You can decide to have each component fetch its data independently and [can-connect] will intelligently combine the two requests into one.
+
+This is made possible by the [can-set] algebra we discussed earlier. [can-connect] sees the outgoing requests, can determine that requests for `todoConnection.getList({completed: true, sort: 'completedDate'})` and `todoConnection.getList({completed: false, sort: 'priority'})` are equivalent to just one `todoConnection.getList({})` request, then make that single request and return the correct sorted data to each call.
+
+This [can-connect/data/combine-requests/combine-requests configurable behavior] is extremely powerful because it abstracts network request complexity away from how you create and compose your application.
+
+### Related-data features
 
 CanJS makes dealing with document-based APIs easier by handling situations where the server might return either a reference to a value or the value itself.
 
